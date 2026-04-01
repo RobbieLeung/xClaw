@@ -1,0 +1,4 @@
+interface:
+  display_name: "xLLM Repo Learning"
+  short_description: "Navigate xLLM architecture, runtime, and scheduler notes"
+  default_prompt: "Use $xllm-repo-learning to read the xLLM repo, follow the main execution chain, and answer with code-grounded architecture guidance."

@@ -1,0 +1,273 @@
+from __future__ import annotations
+
+from contextlib import redirect_stderr, redirect_stdout
+import io
+import os
+from pathlib import Path
+import tempfile
+import unittest
+from unittest import mock
+
+from x_claw import cli
+from x_claw.artifact_store import ArtifactStore
+from x_claw.cli import main
+from x_claw.human_io import ensure_supervision_artifacts, publish_review_request
+from x_claw.protocol import Stage, TaskStatus
+from x_claw.task_store import TaskStore
+from x_claw.workspace import initialize_task_workspace
+
+
+def _invoke_main(argv: list[str]) -> tuple[int, str, str]:
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with redirect_stdout(stdout), redirect_stderr(stderr):
+        try:
+            code = main(argv)
+        except SystemExit as exc:
+            code = int(exc.code)
+    return code, stdout.getvalue(), stderr.getvalue()
+
+
+class CliTest(unittest.TestCase):
+    def test_start_prints_progress_path_and_has_no_interaction_flag(self) -> None:
+        parser = cli.build_parser()
+        self.assertNotIn('--interaction', parser.format_help())
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            repo = root / "repo"
+            repo.mkdir(parents=True, exist_ok=False)
+            fake_worker = type("Worker", (), {"pid": 321})()
+            with mock.patch("x_claw.cli._spawn_gateway_worker", return_value=fake_worker):
+                exit_code, stdout, stderr = _invoke_main([
+                    "start",
+                    "--repo", str(repo),
+                    "--task", "demo task",
+                    "--workspace-root", str(root / "workspace"),
+                    "--task-id", "task-cli-start",
+                ])
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(stderr, "")
+            self.assertIn("progress_path:", stdout)
+
+    def test_status_reports_supervision_fields_and_reject_requires_comment(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            repo = root / "repo"
+            repo.mkdir(parents=True, exist_ok=False)
+            workspace_root = root / "workspace"
+            result = initialize_task_workspace(
+                target_repo_path=repo,
+                task_description="status command",
+                task_id="task-status",
+                workspace_root=workspace_root,
+            )
+            store = TaskStore(result.task_workspace_path)
+            store.update_runtime_state(gateway_pid=os.getpid())
+            artifacts = ArtifactStore(result.task_workspace_path)
+            ensure_supervision_artifacts(task_store=store, artifact_store=artifacts)
+
+            exit_code, stdout, stderr = _invoke_main([
+                "status",
+                "--workspace-root", str(workspace_root),
+            ])
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(stderr, "")
+            self.assertIn("latest_update:", stdout)
+            self.assertIn("pending_advice_count:", stdout)
+            self.assertIn("latest_review_request_id:", stdout)
+            self.assertIn("progress_path:", stdout)
+
+            exit_code, stdout, stderr = _invoke_main([
+                "status",
+                "--workspace-root", str(workspace_root),
+                "--reject",
+            ])
+            self.assertEqual(exit_code, 2)
+            self.assertIn("requires `--comment`", stderr)
+
+    def test_status_advise_is_blocked_while_waiting_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            repo = root / "repo"
+            repo.mkdir(parents=True, exist_ok=False)
+            workspace_root = root / "workspace"
+            result = initialize_task_workspace(
+                target_repo_path=repo,
+                task_description="advice blocked during review",
+                task_id="task-advise-blocked",
+                workspace_root=workspace_root,
+            )
+            store = TaskStore(result.task_workspace_path)
+            store.update_runtime_state(
+                gateway_pid=os.getpid(),
+                stage=Stage.HUMAN_GATE,
+                current_owner="human_gate",
+                status=TaskStatus.WAITING_APPROVAL,
+            )
+            artifacts = ArtifactStore(result.task_workspace_path)
+            ensure_supervision_artifacts(task_store=store, artifact_store=artifacts)
+            publish_review_request(
+                task_store=store,
+                artifact_store=artifacts,
+                summary="please review",
+                proposal_body="proposal",
+            )
+
+            exit_code, stdout, stderr = _invoke_main([
+                "status",
+                "--workspace-root", str(workspace_root),
+                "--advise", "please shrink scope",
+            ])
+            self.assertEqual(exit_code, 2)
+            self.assertEqual(stdout, "")
+            self.assertIn("task is waiting for human review", stderr)
+
+    def test_status_approve_and_reject_use_review_flow(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            repo = root / "repo"
+            repo.mkdir(parents=True, exist_ok=False)
+            workspace_root = root / "workspace"
+            result = initialize_task_workspace(
+                target_repo_path=repo,
+                task_description="review command",
+                task_id="task-review",
+                workspace_root=workspace_root,
+            )
+            store = TaskStore(result.task_workspace_path)
+            store.update_runtime_state(
+                gateway_pid=os.getpid(),
+                stage=Stage.HUMAN_GATE,
+                current_owner="human_gate",
+                status=TaskStatus.WAITING_APPROVAL,
+            )
+            artifacts = ArtifactStore(result.task_workspace_path)
+            ensure_supervision_artifacts(task_store=store, artifact_store=artifacts)
+            publish_review_request(
+                task_store=store,
+                artifact_store=artifacts,
+                summary="please review",
+                proposal_body="proposal",
+            )
+
+            exit_code, stdout, stderr = _invoke_main([
+                "status",
+                "--workspace-root", str(workspace_root),
+                "--approve",
+                "--comment", "looks good",
+            ])
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(stderr, "")
+            self.assertIn("review_decision_id:", stdout)
+            self.assertIn("review_decision: approved", stdout)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            repo = root / "repo"
+            repo.mkdir(parents=True, exist_ok=False)
+            workspace_root = root / "workspace"
+            result = initialize_task_workspace(
+                target_repo_path=repo,
+                task_description="reject command",
+                task_id="task-reject",
+                workspace_root=workspace_root,
+            )
+            store = TaskStore(result.task_workspace_path)
+            store.update_runtime_state(
+                gateway_pid=os.getpid(),
+                stage=Stage.HUMAN_GATE,
+                current_owner="human_gate",
+                status=TaskStatus.WAITING_APPROVAL,
+            )
+            artifacts = ArtifactStore(result.task_workspace_path)
+            ensure_supervision_artifacts(task_store=store, artifact_store=artifacts)
+            publish_review_request(
+                task_store=store,
+                artifact_store=artifacts,
+                summary="please review",
+                proposal_body="proposal",
+            )
+
+            exit_code, stdout, stderr = _invoke_main([
+                "status",
+                "--workspace-root", str(workspace_root),
+                "--reject",
+                "--comment", "tighten scope",
+            ])
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(stderr, "")
+            self.assertIn("review_decision: rejected", stdout)
+            context = store.load_task_context()
+            self.assertEqual(context.current_stage, Stage.PRODUCT_OWNER_DISPATCH)
+            self.assertEqual(context.status, TaskStatus.RUNNING)
+
+    def test_status_advise_is_blocked_in_terminal_states(self) -> None:
+        for status in (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.TERMINATED):
+            with self.subTest(status=status.value), tempfile.TemporaryDirectory() as tmp_dir:
+                root = Path(tmp_dir)
+                repo = root / "repo"
+                repo.mkdir(parents=True, exist_ok=False)
+                workspace_root = root / "workspace"
+                result = initialize_task_workspace(
+                    target_repo_path=repo,
+                    task_description=f"terminal advice {status.value}",
+                    task_id=f"task-terminal-{status.value}",
+                    workspace_root=workspace_root,
+                )
+                store = TaskStore(result.task_workspace_path)
+                store.update_runtime_state(
+                    gateway_pid=os.getpid(),
+                    status=status,
+                )
+                artifacts = ArtifactStore(result.task_workspace_path)
+                ensure_supervision_artifacts(task_store=store, artifact_store=artifacts)
+
+                exit_code, stdout, stderr = _invoke_main([
+                    "status",
+                    "--workspace-root", str(workspace_root),
+                    "--advise", "please keep going",
+                ])
+                self.assertEqual(exit_code, 2)
+                self.assertEqual(stdout, "")
+                self.assertIn("no active task is running", stderr)
+
+    def test_status_review_actions_fail_outside_waiting_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            repo = root / "repo"
+            repo.mkdir(parents=True, exist_ok=False)
+            workspace_root = root / "workspace"
+            result = initialize_task_workspace(
+                target_repo_path=repo,
+                task_description="review outside gate",
+                task_id="task-review-outside-gate",
+                workspace_root=workspace_root,
+            )
+            store = TaskStore(result.task_workspace_path)
+            store.update_runtime_state(gateway_pid=os.getpid(), status=TaskStatus.RUNNING)
+            artifacts = ArtifactStore(result.task_workspace_path)
+            ensure_supervision_artifacts(task_store=store, artifact_store=artifacts)
+
+            exit_code, stdout, stderr = _invoke_main([
+                "status",
+                "--workspace-root", str(workspace_root),
+                "--approve",
+            ])
+            self.assertEqual(exit_code, 2)
+            self.assertEqual(stdout, "")
+            self.assertIn("waiting for approval", stderr)
+
+            exit_code, stdout, stderr = _invoke_main([
+                "status",
+                "--workspace-root", str(workspace_root),
+                "--reject",
+                "--comment", "not ready",
+            ])
+            self.assertEqual(exit_code, 2)
+            self.assertEqual(stdout, "")
+            self.assertIn("waiting for approval", stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()

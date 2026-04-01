@@ -1,0 +1,11 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test/tool cache
+.pytest_cache/
+
+# Local workspace artifacts
+workspace/
+src/x_claw.egg-info/
