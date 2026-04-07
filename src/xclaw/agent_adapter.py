@@ -12,6 +12,14 @@ import shutil
 import subprocess
 from typing import Mapping, Protocol, Sequence
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
+    try:
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ModuleNotFoundError:  # pragma: no cover - optional dependency
+        tomllib = None  # type: ignore[assignment]
+
 from . import protocol as constants
 from .artifact_store import ArtifactStore
 from .models import AgentResult
@@ -66,10 +74,12 @@ _PROMPT_REQUIRED_KEYWORDS: tuple[str, ...] = (
     "你的职责边界",
 )
 
-_DEFAULT_CODEX_ARGUMENTS: tuple[str, ...] = (
+_DEFAULT_CODEX_MODEL = "gpt-5-4"
+
+_DEFAULT_CODEX_ARGUMENTS_TEMPLATE: tuple[str, ...] = (
     "exec",
     "-m",
-    "gpt-5-4",
+    "{codex_model}",
     "--yolo",
     "--cd",
     "{target_repo_path}",
@@ -235,7 +245,7 @@ class AgentAdapter:
         *,
         runner: Runner | None = None,
         codex_executable: str = "codex",
-        codex_arguments: Sequence[str] = _DEFAULT_CODEX_ARGUMENTS,
+        codex_arguments: Sequence[str] | None = None,
         send_prompt_via_stdin: bool = True,
         agents_dir: str | Path | None = None,
         skills_dir: str | Path | None = None,
@@ -244,6 +254,12 @@ class AgentAdapter:
         self._resource_stack = ExitStack()
         self.runner = runner or SubprocessRunner()
         self.codex_executable = _normalize_non_empty(codex_executable, "codex_executable")
+        if codex_arguments is None:
+            codex_model = _resolve_codex_model_from_config()
+            codex_arguments = tuple(
+                argument.replace("{codex_model}", codex_model)
+                for argument in _DEFAULT_CODEX_ARGUMENTS_TEMPLATE
+            )
         if not codex_arguments:
             raise ValueError("codex_arguments must be non-empty.")
         self.codex_arguments = tuple(str(argument) for argument in codex_arguments)
@@ -912,6 +928,66 @@ def _parse_run_sequence(run_directory_name: str) -> int:
     if match is None:
         return 1
     return int(match.group("seq"))
+
+
+def _resolve_codex_model_from_config() -> str:
+    config_path = Path.home() / ".codex" / "config.toml"
+    config = _load_toml_mapping(config_path)
+    if not config:
+        return _DEFAULT_CODEX_MODEL
+
+    root_model = _coerce_optional_string(config.get("model"))
+    if root_model is not None:
+        return root_model
+
+    defaults = _coerce_mapping(config.get("defaults"))
+    if defaults is not None:
+        defaults_model = _coerce_optional_string(defaults.get("model"))
+        if defaults_model is not None:
+            return defaults_model
+
+    profiles = _coerce_mapping(config.get("profiles"))
+    if profiles is not None:
+        profile_name = _coerce_optional_string(config.get("profile")) or "default"
+        selected = _coerce_mapping(profiles.get(profile_name))
+        if selected is not None:
+            selected_model = _coerce_optional_string(selected.get("model"))
+            if selected_model is not None:
+                return selected_model
+
+        default_profile = _coerce_mapping(profiles.get("default"))
+        if default_profile is not None:
+            default_profile_model = _coerce_optional_string(default_profile.get("model"))
+            if default_profile_model is not None:
+                return default_profile_model
+
+    return _DEFAULT_CODEX_MODEL
+
+
+def _load_toml_mapping(path: Path) -> Mapping[str, object]:
+    if tomllib is None or not path.is_file():
+        return {}
+    try:
+        with path.open("rb") as handle:
+            parsed = tomllib.load(handle)
+    except Exception:
+        return {}
+    if isinstance(parsed, Mapping):
+        return parsed
+    return {}
+
+
+def _coerce_optional_string(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _coerce_mapping(value: object) -> Mapping[str, object] | None:
+    if isinstance(value, Mapping):
+        return value
+    return None
 
 
 __all__ = [
