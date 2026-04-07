@@ -5,9 +5,10 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from xclaw import protocol as constants
-from xclaw.agent_adapter import AgentAdapter, AgentAdapterError, RunnerResult
+from xclaw.agent_adapter import AgentAdapter, AgentAdapterError, AgentInvocation, RunnerResult
 from xclaw.artifact_store import ArtifactStore
 from xclaw.executor import StageExecutor
 from xclaw.gateway import _resolve_launch_dir_child
@@ -160,6 +161,31 @@ class AgentAdapterAssetResolutionTest(unittest.TestCase):
                 "extra_context=context_artifacts_warning=Parsed legacy backtick-wrapped `context_artifacts` directive from dev_handoff.; resolved_context_artifacts=implementation_result, test_report",
                 run_log_text,
             )
+
+    def test_default_codex_arguments_use_model_from_user_codex_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            result = self._initialize_workspace(root, task_id="task-codex-model-from-config")
+            codex_home = root / ".codex"
+            codex_home.mkdir(parents=True, exist_ok=False)
+            (codex_home / "config.toml").write_text('model = "gpt-5.4"\n', encoding="utf-8")
+
+            with patch("xclaw.agent_adapter.Path.home", return_value=root):
+                adapter = AgentAdapter(result.task_workspace_path)
+            try:
+                invocation = AgentInvocation(
+                    role=constants.ROLE_PRODUCT_OWNER,
+                    objective="verify codex model resolution",
+                    stage=Stage.PRODUCT_OWNER_REFINEMENT,
+                    strict_required_artifacts=False,
+                )
+                outcome = adapter.invoke(invocation)
+            finally:
+                adapter.close()
+
+            self.assertIn("-m", outcome.command)
+            model_index = outcome.command.index("-m") + 1
+            self.assertEqual(outcome.command[model_index], "gpt-5.4")
 
 
 
