@@ -23,6 +23,19 @@ For the full design rationale, see `docs/DESIGN.md`.
 - Local agent execution: internal roles run through the local `codex` CLI
 - Observable progress: `progress.md` maintains a user-readable summary and append-only timeline
   - The summary includes `latest_update`, `current_focus`, `next_step`, `risks`, `needs_human_review`, and `user_summary`
+- Built-in local skills: bundled `skills/` assets help agents improve task clarification, planning, implementation self-checks, and handoff quality; agents can inspect relevant `SKILL.md` files from the local skills directory when useful
+  - These skills are workflow assets rather than reference notes: they provide process guidance, anti-shortcut checks, and completion checklists
+  - Skill consolidation principle: each workflow skill should own one primary decision area, reducing overlap and making role-level selection easier
+
+## Skill Matrix
+
+- `requirement-refinement`: primary for `Product Owner` / `Project Manager`; helps turn vague tasks into clear requirements and acceptance criteria
+- `execution-planning`: primary for `Product Owner`; breaks requirements into steps, handoffs, dependencies, and completion markers
+- `incremental-delivery`: primary for `Developer`; keeps implementation thin, verification-aware, and step-scoped; secondary for `Tester`
+- `debugging-and-recovery`: primary for `Developer` / `Tester`; isolates failures and produces actionable recovery guidance
+- `code-review-handoff`: primary for `Developer`; summarizes changes, impact, risks, and review focus for downstream roles
+- `quality-review`: primary for `QA`; judges requirement fit, test sufficiency, residual risk, and delivery readiness
+- `xllm-repo-learning`: domain-specific repository understanding skill for xLLM architecture and code navigation
 
 ## Design Principles
 

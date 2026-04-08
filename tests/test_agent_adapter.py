@@ -18,6 +18,16 @@ from xclaw.task_store import TaskStore
 from xclaw.workspace import initialize_task_workspace
 
 
+NEW_SKILL_NAMES = (
+    "requirement-refinement",
+    "execution-planning",
+    "incremental-delivery",
+    "code-review-handoff",
+    "debugging-and-recovery",
+    "quality-review",
+)
+
+
 class _FakeRunner:
     def run(self, command, *, cwd, stdin_text=None, timeout_seconds=None):
         return RunnerResult(
@@ -93,6 +103,19 @@ class AgentAdapterAssetResolutionTest(unittest.TestCase):
                 finally:
                     adapter.close()
 
+    def test_bundled_skills_include_new_localized_skill_set(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            result = self._initialize_workspace(root, task_id="task-bundled-skill-set")
+            adapter = AgentAdapter(result.task_workspace_path)
+
+            try:
+                for name in NEW_SKILL_NAMES:
+                    skill_path = adapter.skills_dir / name / "SKILL.md"
+                    self.assertTrue(skill_path.is_file(), msg=f"missing bundled skill: {name}")
+            finally:
+                adapter.close()
+
     def test_explicit_missing_skills_directory_is_diagnostic(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -161,6 +184,96 @@ class AgentAdapterAssetResolutionTest(unittest.TestCase):
                 "extra_context=context_artifacts_warning=Parsed legacy backtick-wrapped `context_artifacts` directive from dev_handoff.; resolved_context_artifacts=implementation_result, test_report",
                 run_log_text,
             )
+
+    def test_validate_prompt_assets_accepts_rewritten_agent_prompts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            result = self._initialize_workspace(root, task_id="task-validate-prompt-assets")
+            adapter = AgentAdapter(result.task_workspace_path)
+
+            try:
+                resolved = adapter.validate_prompt_assets()
+            finally:
+                adapter.close()
+
+            self.assertEqual(set(resolved), {
+                constants.ROLE_PRODUCT_OWNER,
+                constants.ROLE_PROJECT_MANAGER,
+                constants.ROLE_DEVELOPER,
+                constants.ROLE_TESTER,
+                constants.ROLE_QA,
+            })
+
+    def test_prompt_assets_include_stronger_skill_guidance_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            result = self._initialize_workspace(root, task_id="task-prompt-skill-guidance")
+            adapter = AgentAdapter(result.task_workspace_path)
+
+            try:
+                product_owner_prompt, _ = adapter.load_role_prompt(constants.ROLE_PRODUCT_OWNER)
+                developer_prompt, _ = adapter.load_role_prompt(constants.ROLE_DEVELOPER)
+            finally:
+                adapter.close()
+
+            for prompt in (product_owner_prompt, developer_prompt):
+                self.assertIn("触发条件", prompt)
+                self.assertIn("可跳过条件", prompt)
+                self.assertIn("最低落地要求", prompt)
+
+    def test_rendered_prompt_keeps_local_skills_discovery_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            result = self._initialize_workspace(root, task_id="task-local-skills-guidance")
+            adapter = AgentAdapter(result.task_workspace_path, runner=_FakeRunner())
+            invocation = AgentInvocation(
+                role=constants.ROLE_PRODUCT_OWNER,
+                objective="verify rendered prompt guidance",
+                stage=Stage.PRODUCT_OWNER_REFINEMENT,
+                strict_required_artifacts=False,
+            )
+
+            try:
+                outcome = adapter.invoke(invocation)
+                prompt_text = (Path(result.task_workspace_path) / outcome.prompt_path).read_text(encoding="utf-8")
+            finally:
+                adapter.close()
+
+            self.assertIn("- local_skills_dir:", prompt_text)
+            self.assertIn("inspect relevant `SKILL.md` files", prompt_text)
+
+    def test_rendered_prompts_include_role_specific_skill_recommendations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            result = self._initialize_workspace(root, task_id="task-role-skill-recommendations")
+            adapter = AgentAdapter(result.task_workspace_path, runner=_FakeRunner())
+
+            try:
+                po_outcome = adapter.invoke(
+                    AgentInvocation(
+                        role=constants.ROLE_PRODUCT_OWNER,
+                        objective="verify product owner skill guidance",
+                        stage=Stage.PRODUCT_OWNER_REFINEMENT,
+                        strict_required_artifacts=False,
+                    )
+                )
+                developer_outcome = adapter.invoke(
+                    AgentInvocation(
+                        role=constants.ROLE_DEVELOPER,
+                        objective="verify developer skill guidance",
+                        stage=Stage.DEVELOPER,
+                        strict_required_artifacts=False,
+                    )
+                )
+                po_prompt = (Path(result.task_workspace_path) / po_outcome.prompt_path).read_text(encoding="utf-8")
+                developer_prompt = (Path(result.task_workspace_path) / developer_outcome.prompt_path).read_text(encoding="utf-8")
+            finally:
+                adapter.close()
+
+            self.assertIn("requirement-refinement", po_prompt)
+            self.assertIn("execution-planning", po_prompt)
+            self.assertIn("incremental-delivery", developer_prompt)
+            self.assertIn("debugging-and-recovery", developer_prompt)
 
     def test_default_codex_arguments_use_model_from_user_codex_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
