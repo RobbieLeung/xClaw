@@ -5,7 +5,9 @@ import tempfile
 import unittest
 
 from xclaw.markdown import read_markdown_file
-from xclaw.workspace import initialize_task_workspace
+from xclaw.task_store import TaskStore
+from xclaw.protocol import Stage, TaskStatus
+from xclaw.workspace import find_latest_task_workspace, initialize_task_workspace
 
 
 class WorkspaceTest(unittest.TestCase):
@@ -23,6 +25,44 @@ class WorkspaceTest(unittest.TestCase):
             document = read_markdown_file(Path(result.task_file_path))
             self.assertNotIn("interaction_mode", document.body)
             self.assertIn("- gateway_pid:", document.body)
+
+
+    def test_find_latest_task_workspace_prefers_recent_task_md(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            repo = root / "repo"
+            repo.mkdir(parents=True, exist_ok=False)
+            workspace_root = root / "workspace"
+            older = initialize_task_workspace(
+                target_repo_path=repo,
+                task_description="older",
+                task_id="task-20240101-000000-old",
+                workspace_root=workspace_root,
+            )
+            latest = initialize_task_workspace(
+                target_repo_path=repo,
+                task_description="latest",
+                task_id="task-20240102-000000-new",
+                workspace_root=workspace_root,
+            )
+            TaskStore(older.task_workspace_path).update_runtime_state(
+                stage=Stage.DEVELOPER,
+                current_owner="developer",
+                status=TaskStatus.FAILED,
+                gateway_pid=None,
+            )
+            TaskStore(latest.task_workspace_path).update_runtime_state(
+                stage=Stage.TESTER,
+                current_owner="tester",
+                status=TaskStatus.TERMINATED,
+                gateway_pid=None,
+            )
+
+            discovered = find_latest_task_workspace(workspace_root)
+            self.assertIsNotNone(discovered)
+            assert discovered is not None
+            self.assertEqual(discovered.task_id, "task-20240102-000000-new")
+            self.assertEqual(discovered.task_workspace_path, latest.task_workspace_path)
 
 
 if __name__ == "__main__":

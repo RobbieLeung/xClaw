@@ -6,7 +6,7 @@
 
 这一版设计的核心目标是：
 
-- 用户只做五件事：提交任务、看进度、提建议、必要时确认计划、最终做交付验收
+- 用户只做六件事：提交任务、看进度、提建议、必要时确认计划、最终做交付验收、必要时恢复最近任务
 - 系统使用内部多角色协作能力
 - 正式计划收敛到唯一工件 `plan.md`
 - 人类只在需要做产品/业务判断时介入，而不是被迫参与所有计划微调
@@ -18,6 +18,7 @@
 3. `xclaw status --advise "..."`：中途提建议
 4. `xclaw status --approve` / `--reject --comment "..."`：确认当前待审事项
 5. `xclaw stop`：终止任务
+6. `xclaw resume`：恢复最近一次任务
 
 ## 2. 内部角色
 
@@ -47,8 +48,9 @@
 - `xclaw start`
 - `xclaw status`
 - `xclaw stop`
+- `xclaw resume`
 
-其中 `status` 同时承担“查看”和“监督输入”两个职责。
+其中 `status` 同时承担“查看”和“监督输入”两个职责；`resume` 负责在没有活跃 worker 时，把最近 task 拉回 Product Owner 边界继续推进。
 
 ### 3.2 建议（advice）
 
