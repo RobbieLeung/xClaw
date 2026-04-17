@@ -132,6 +132,87 @@ class CliTest(unittest.TestCase):
         self.assertEqual(stdout, "")
         self.assertIn("task is waiting for human review", stderr)
 
+
+    def test_resume_restarts_latest_task_at_product_owner_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            repo = root / "repo"
+            repo.mkdir(parents=True, exist_ok=False)
+            workspace_root = root / "workspace"
+            older = initialize_task_workspace(
+                target_repo_path=repo,
+                task_description="older",
+                task_id="task-20240101-000000-older",
+                workspace_root=workspace_root,
+            )
+            latest = initialize_task_workspace(
+                target_repo_path=repo,
+                task_description="latest",
+                task_id="task-20240102-000000-latest",
+                workspace_root=workspace_root,
+            )
+            older_store = TaskStore(older.task_workspace_path)
+            older_store.update_runtime_state(
+                stage=Stage.TESTER,
+                current_owner=constants.ROLE_TESTER,
+                status=TaskStatus.TERMINATED,
+                gateway_pid=None,
+            )
+            latest_store = TaskStore(latest.task_workspace_path)
+            latest_store.update_runtime_state(
+                stage=Stage.DEVELOPER,
+                current_owner=constants.ROLE_DEVELOPER,
+                status=TaskStatus.FAILED,
+                gateway_pid=None,
+            )
+
+            fake_worker = type("Worker", (), {"pid": 654})()
+            with mock.patch("xclaw.cli._spawn_gateway_worker", return_value=fake_worker) as spawn_worker:
+                exit_code, stdout, stderr = _invoke_main(["resume", "--workspace-root", str(workspace_root)])
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(stderr, "")
+            self.assertIn("task_id: task-20240102-000000-latest", stdout)
+            self.assertIn("resume_stage: product_owner_dispatch", stdout)
+            spawn_worker.assert_called_once()
+            resumed_store = TaskStore(latest.task_workspace_path)
+            resumed_context = resumed_store.load_task_context()
+            self.assertEqual(resumed_context.status, TaskStatus.RUNNING)
+            self.assertEqual(resumed_context.current_stage, Stage.PRODUCT_OWNER_DISPATCH)
+            self.assertEqual(resumed_context.current_owner, constants.ROLE_PRODUCT_OWNER)
+
+    def test_resume_rejects_when_active_task_exists(self) -> None:
+        workspace_root, _, _ = self._workspace(task_id="task-resume-blocked")
+        exit_code, stdout, stderr = _invoke_main(["resume", "--workspace-root", str(workspace_root)])
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(stdout, "")
+        self.assertIn("active task already exists", stderr)
+
+    def test_resume_rejects_completed_latest_task(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            repo = root / "repo"
+            repo.mkdir(parents=True, exist_ok=False)
+            workspace_root = root / "workspace"
+            result = initialize_task_workspace(
+                target_repo_path=repo,
+                task_description="done",
+                task_id="task-resume-completed",
+                workspace_root=workspace_root,
+            )
+            store = TaskStore(result.task_workspace_path)
+            store.update_runtime_state(
+                stage=Stage.CLOSEOUT,
+                current_owner=constants.ROLE_ORCHESTRATOR,
+                status=TaskStatus.COMPLETED,
+                gateway_pid=None,
+            )
+
+            exit_code, stdout, stderr = _invoke_main(["resume", "--workspace-root", str(workspace_root)])
+            self.assertEqual(exit_code, 2)
+            self.assertEqual(stdout, "")
+            self.assertIn("latest task is already completed", stderr)
+
     def test_start_prints_progress_path(self) -> None:
         parser = cli.build_parser()
         self.assertNotIn("--interaction", parser.format_help())

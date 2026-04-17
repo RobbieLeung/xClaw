@@ -15,18 +15,20 @@ from .gateway import GatewayRunConfig, TaskGateway
 from .human_io import (
     ensure_supervision_artifacts,
     pending_human_advice_count,
+    publish_progress_update,
     read_current_review_request,
     read_latest_review_request_id,
     read_progress_snapshot,
     submit_human_advice,
     submit_review_decision,
 )
-from .protocol import ReviewDecision, TaskStatus
+from .protocol import ReviewDecision, Stage, TaskStatus, fixed_next_stage, owner_for_stage
 from .task_store import TaskStore
 from .workspace import (
     ActiveTaskDiscoveryError,
     WorkspaceError,
     find_active_task_workspace,
+    find_latest_task_workspace,
     initialize_task_workspace,
     resolve_workspace_root,
 )
@@ -65,6 +67,9 @@ def build_parser() -> argparse.ArgumentParser:
     start_parser.add_argument("--task", required=True, help="Task description")
     start_parser.add_argument("--task-id", help="Optional explicit task identifier")
     start_parser.add_argument("--workspace-root", type=Path, help="Optional workspace root override")
+
+    resume_parser = subparsers.add_parser("resume", help="Resume the latest task from a Product Owner recovery boundary")
+    resume_parser.add_argument("--workspace-root", type=Path, help="Optional workspace root override")
 
     status_parser = subparsers.add_parser("status", help="Show task progress and optionally submit supervision input")
     status_parser.add_argument("--workspace-root", type=Path, help="Optional workspace root override")
@@ -110,6 +115,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _handle_start(args)
         if args.command == "status":
             return _handle_status(args)
+        if args.command == "resume":
+            return _handle_resume(args)
         if args.command == "stop":
             return _handle_stop(args)
         if args.command == "gateway-worker":
@@ -122,6 +129,86 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     raise RuntimeError(f"unsupported command: {args.command!r}")
+
+
+def _handle_resume(args: argparse.Namespace) -> int:
+    command_launch_dir = Path.cwd().resolve()
+    workspace_root = _resolve_cli_workspace_root(args.workspace_root)
+    active = find_active_task_workspace(workspace_root)
+    if active is not None:
+        raise CliCommandError(
+            "active task already exists: "
+            f"{active.task_id} ({active.task_workspace_path}). "
+            "Use `xclaw status`.",
+        )
+
+    latest = find_latest_task_workspace(workspace_root)
+    if latest is None:
+        raise CliCommandError("no resumable task workspace exists.")
+
+    task_store = TaskStore(latest.task_workspace_path)
+    artifact_store = ArtifactStore(latest.task_workspace_path)
+    ensure_supervision_artifacts(task_store=task_store, artifact_store=artifact_store)
+    context = task_store.load_task_context()
+    if context.status == TaskStatus.COMPLETED:
+        raise CliCommandError(
+            f"latest task is already completed: {context.task_id} ({context.task_workspace_path}).",
+        )
+
+    resume_stage = _resume_product_owner_stage(context.current_stage)
+    task_store.update_runtime_state(
+        stage=resume_stage,
+        current_owner=owner_for_stage(resume_stage),
+        status=TaskStatus.RUNNING,
+        gateway_pid=None,
+    )
+    task_store.append_event(
+        actor="system",
+        action="task_resume_requested",
+        result=TaskStatus.RUNNING.value,
+        notes=(
+            f"from_status={context.status.value}; "
+            f"from_stage={context.current_stage.value}; "
+            f"resume_stage={resume_stage.value}"
+        ),
+    )
+    task_store.append_recovery_note(
+        "task resumed from CLI; "
+        f"from_status={context.status.value}; "
+        f"from_stage={context.current_stage.value}; "
+        f"resume_stage={resume_stage.value}"
+    )
+    publish_progress_update(
+        task_store=task_store,
+        artifact_store=artifact_store,
+        latest_update="Task resumed from the latest workspace snapshot.",
+        timeline_title="Task Resumed",
+        timeline_body=(
+            f"- task_id: {context.task_id}\n"
+            f"- previous_status: {context.status.value}\n"
+            f"- previous_stage: {context.current_stage.value}\n"
+            f"- resume_stage: {resume_stage.value}"
+        ),
+        current_focus="Product Owner is repairing the latest task workspace before the pipeline continues.",
+        next_step=f"Route the task from {resume_stage.value} and continue the pipeline.",
+        needs_human_review=False,
+        user_summary=(
+            "The latest task workspace has been resumed at a Product Owner boundary so the "
+            "pipeline can recover and continue."
+        ),
+    )
+
+    worker = _spawn_gateway_worker(
+        task_workspace_path=context.task_workspace_path,
+        workspace_root=workspace_root,
+        command_launch_dir=command_launch_dir,
+    )
+    print(f"task_id: {context.task_id}")
+    print(f"task_workspace_path: {context.task_workspace_path}")
+    print(f"resume_stage: {resume_stage.value}")
+    print(f"worker_pid: {worker.pid}")
+    print(f"progress_path: {Path(context.task_workspace_path) / 'current' / 'progress.md'}")
+    return 0
 
 
 def _handle_start(args: argparse.Namespace) -> int:
@@ -202,7 +289,7 @@ def _idle_status_view() -> dict[str, str]:
         "task_status": "idle",
         "user_summary": "No active task is running.",
         "latest_update": "No active task is running.",
-        "next_step": "Run `xclaw start --repo ... --task ...` to begin.",
+        "next_step": "Run `xclaw start --repo ... --task ...` to begin, or `xclaw resume` to recover the latest task.",
         "needs_human_review": "no",
         "review_kind": "-",
         "plan_confirmation_summary": "-",
@@ -345,6 +432,21 @@ def _handle_stop(args: argparse.Namespace) -> int:
     print(f"task_id: {context.task_id}")
     print("status: terminated")
     return 0
+
+
+def _resume_product_owner_stage(current_stage: Stage | str) -> Stage:
+    normalized = Stage(current_stage)
+    if normalized in {Stage.PRODUCT_OWNER_REFINEMENT, Stage.PRODUCT_OWNER_DISPATCH}:
+        return normalized
+
+    next_stage = fixed_next_stage(normalized)
+    if next_stage in {Stage.PRODUCT_OWNER_REFINEMENT, Stage.PRODUCT_OWNER_DISPATCH}:
+        return next_stage
+
+    raise CliCommandError(
+        "latest task cannot be resumed through Product Owner recovery from stage: "
+        f"{normalized.value}."
+    )
 
 
 def _handle_gateway_worker(args: argparse.Namespace) -> int:

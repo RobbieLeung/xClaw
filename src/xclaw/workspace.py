@@ -94,6 +94,16 @@ class ActiveTaskWorkspace:
     gateway_pid: int
 
 
+@dataclass(frozen=True)
+class TaskWorkspaceSummary:
+    """One discovered task workspace regardless of current runtime liveness."""
+
+    task_id: str
+    task_workspace_path: str
+    status: str
+    gateway_pid: int | None
+
+
 def project_root() -> Path:
     """Return xclaw repository root path."""
 
@@ -325,6 +335,56 @@ def find_active_task_workspace(
     if not active_candidates:
         return None
     return active_candidates[0]
+
+
+def find_latest_task_workspace(
+    workspace_root: str | Path | None = None,
+) -> TaskWorkspaceSummary | None:
+    """Return the most recently updated task workspace under the selected root."""
+
+    from .task_store import TaskStore, TaskStoreError
+
+    root = resolve_workspace_root(workspace_root)
+    if not root.exists():
+        return None
+
+    latest_candidate: tuple[str, TaskWorkspaceSummary] | None = None
+    stale_candidates: list[Path] = []
+    for child in sorted(root.iterdir()):
+        if not child.is_dir():
+            continue
+        task_file = child / constants.TASK_FILENAME
+        if not task_file.is_file():
+            continue
+        try:
+            context = TaskStore(child).load_task_context()
+        except TaskStoreError:
+            continue
+
+        gateway_pid = context.gateway_pid
+        if gateway_pid is not None and not _pid_is_alive(gateway_pid):
+            stale_candidates.append(child)
+            gateway_pid = None
+
+        candidate = TaskWorkspaceSummary(
+            task_id=context.task_id,
+            task_workspace_path=context.task_workspace_path,
+            status=context.status.value,
+            gateway_pid=gateway_pid,
+        )
+        sort_key = context.task_id
+        if latest_candidate is None or sort_key > latest_candidate[0]:
+            latest_candidate = (sort_key, candidate)
+
+    for stale_path in stale_candidates:
+        try:
+            TaskStore(stale_path).update_runtime_state(gateway_pid=None)
+        except Exception:
+            continue
+
+    if latest_candidate is None:
+        return None
+    return latest_candidate[1]
 
 
 def render_template(
