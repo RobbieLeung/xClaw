@@ -143,8 +143,8 @@ KV cache 看起来是每层一个 tensor；权重看起来是连续 device 内�
 - `xllm/core/layers/npu/loader/rolling_weight_buffer.cpp`
 - `xllm/core/distributed_runtime/disagg_pd_service_impl.cpp`
 - `xllm/core/scheduler/disagg_pd_scheduler.cpp`
-- `xllm/core/framework/kv_cache/mooncake_kv_cache_transfer.cpp`
-- `xllm/core/framework/kv_cache/mooncake_weight_transfer.cpp`
+- `xllm/core/framework/kv_cache_transfer/mooncake_kv_cache_transfer.cpp`
+- `xllm/core/framework/kv_cache_transfer/mooncake_weight_transfer.cpp`
 - `xllm/core/distributed_runtime/comm_channel.cpp`
 - `xllm/core/distributed_runtime/worker_service.cpp`
 - `xllm/core/runtime/xservice_client.cpp`

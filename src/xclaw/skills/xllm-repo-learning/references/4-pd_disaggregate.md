@@ -83,10 +83,10 @@
 - `xllm/core/framework/request/sequence_kv_state.cpp`
 - `xllm/core/framework/request/incremental_decoder.h`
 - `xllm/core/framework/request/incremental_decoder.cpp`
-- `xllm/core/framework/kv_cache/kv_cache_transfer.h`
-- `xllm/core/framework/kv_cache/kv_cache_transfer.cpp`
-- `xllm/core/framework/kv_cache/llm_data_dist_transfer.h`
-- `xllm/core/framework/kv_cache/llm_data_dist_transfer.cpp`
+- `xllm/core/framework/kv_cache_transfer/kv_cache_transfer.h`
+- `xllm/core/framework/kv_cache_transfer/kv_cache_transfer.cpp`
+- `xllm/core/framework/kv_cache_transfer/llm_data_dist_transfer.h`
+- `xllm/core/framework/kv_cache_transfer/llm_data_dist_transfer.cpp`
 - `xllm/api_service/chat_service_impl.cpp`
 - `xllm/api_service/completion_service_impl.cpp`
 - `xllm/proto/disagg_pd.proto`
