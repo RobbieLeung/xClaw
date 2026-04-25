@@ -28,6 +28,8 @@ Default baseline scenario for reasoning:
 - OpenAI-style chat/completion request
 - LLM backend
 
+If the right topic is unclear, first consult [references/README.md](references/README.md).
+
 If the user asks a general “how does xLLM work” question, start with:
 
 1. [references/0-overview.md](references/0-overview.md)
@@ -35,8 +37,48 @@ If the user asks a general “how does xLLM work” question, start with:
 
 Do not load every reference file up front. Read only the topic files needed for the current question.
 
+## Agent Operating Modes
+
+- Explain mode: load the matching reference, verify key claims in current xLLM source, then answer with the main chain plus concrete classes/functions.
+- Audit mode: compare notes with source before editing this skill; run `python3 scripts/check_xllm_refs.py` and fix stale paths or claims only.
+- Deep-dive mode: start from the topic reference, then follow source calls with `rg`; avoid broad repo scans unless the topic boundary is unclear.
+
+## Evidence Checklist
+
+Before giving a source-level answer, confirm these when relevant:
+
+- Entry point and call order still match current code.
+- Flag/default behavior is checked in `global_flags.*`, `xllm.cpp`, or `Options`.
+- Backend/model-specific behavior is separated from framework-common behavior.
+- Any discrepancy between references and source is stated explicitly.
+
+## Drift Hotspots
+
+Re-check these areas especially carefully because they change often:
+
+- Startup-derived capabilities: backend, parser, `enable_mla`, NPU backend.
+- Server lifecycle and route binding for master, worker, PD, and xTensor modes.
+- KV transfer/store files under `xllm/core/framework/kv_cache_transfer`.
+- Parallel topology fields such as `dp_size`, `cp_size`, `tp_size`, `sp_size`, `cfg_size`, and `ep_size`.
+- Scheduler selection order in `scheduler_factory.cpp`.
+
+## Answer Shape
+
+Prefer this structure for architecture answers:
+
+1. Main-chain summary in 2-4 bullets.
+2. Source path with key classes/functions.
+3. Important variants or backend-specific branches.
+4. Caveats where notes and source may drift.
+
+For skill maintenance, run:
+
+`python3 scripts/check_xllm_refs.py`
+
 ## Topic Map
 
+- Reference routing and maintenance checklist:
+  [references/README.md](references/README.md)
 - Startup, config, module map:
   [references/0-overview.md](references/0-overview.md)
 - End-to-end architecture and main call chains:
@@ -79,7 +121,7 @@ Do not load every reference file up front. Read only the topic files needed for 
 Prefer `rg` to jump into code:
 
 - startup:
-  `rg -n "int main|run\\(" xllm/xllm.cpp xllm/core/common`
+  `rg -n "int main|run\\(|get_model_backend|should_enable_mla|validate_flags" xllm/xllm.cpp xllm/core/common xllm/core/util xllm/core/distributed_runtime/master.cpp`
 - service entry:
   `rg -n "APIService|process_async|handle_request" xllm/api_service xllm/server xllm/core/distributed_runtime`
 - scheduler:
@@ -89,7 +131,7 @@ Prefer `rg` to jump into code:
 - engine/worker:
   `rg -n "class LLMEngine|class WorkerImpl|step_internal|forward\\(" xllm/core/distributed_runtime xllm/core/runtime`
 - KV/prefix:
-  `rg -n "PrefixCache|KVCache|BlockManager|transfer_kv_info" xllm/core/framework xllm/core/runtime`
+  `rg -n "PrefixCache|KVCache|BlockManager|transfer_kv_info|KVCacheTransfer|KVCacheStore" xllm/core/framework xllm/core/runtime`
 - graph/xTensor:
   `rg -n "enable_graph|GraphExecutor|XTensor|PhyPagePool|PageAllocator" xllm/core`
 

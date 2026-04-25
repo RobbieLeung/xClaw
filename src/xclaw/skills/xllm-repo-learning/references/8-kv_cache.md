@@ -107,12 +107,12 @@
 
 - `xllm/core/framework/kv_cache/kv_cache.h`
 - `xllm/core/framework/kv_cache/kv_cache.cpp`
-- `xllm/core/framework/kv_cache/hierarchy_kv_cache_transfer.h`
-- `xllm/core/framework/kv_cache/hierarchy_kv_cache_transfer.cpp`
-- `xllm/core/framework/kv_cache/kv_cache_transfer.h`
-- `xllm/core/framework/kv_cache/kv_cache_transfer.cpp`
-- `xllm/core/framework/kv_cache/kv_cache_store.h`
-- `xllm/core/framework/kv_cache/kv_cache_store.cpp`
+- `xllm/core/framework/kv_cache_transfer/hierarchy_kv_cache_transfer.h`
+- `xllm/core/framework/kv_cache_transfer/hierarchy_kv_cache_transfer.cpp`
+- `xllm/core/framework/kv_cache_transfer/kv_cache_transfer.h`
+- `xllm/core/framework/kv_cache_transfer/kv_cache_transfer.cpp`
+- `xllm/core/framework/kv_cache_transfer/kv_cache_store.h`
+- `xllm/core/framework/kv_cache_transfer/kv_cache_store.cpp`
 - `xllm/core/common/types.h`
 - `xllm/core/framework/model/model_input_params.h`
 - `xllm/core/util/hash_util.h`
@@ -1100,7 +1100,7 @@ sequence->kv_state().set_transfer_kv_info(std::move(info))
 
 1. `xllm/core/runtime/params_utils.cpp`
    - 看 `TransferKVInfo / BlockTransferInfo` 在 RPC / SHM 里的序列化路径
-2. `xllm/core/framework/kv_cache/mooncake_kv_cache_transfer.*`
+2. `xllm/core/framework/kv_cache_transfer/mooncake_kv_cache_transfer.*`
    - 深挖 PD 远端传输在 NPU/Mooncake 侧的真正实现
 3. `xllm/core/runtime/forward_params.h`
    - 把 batch 输入字段和 kernel 约定完全对齐

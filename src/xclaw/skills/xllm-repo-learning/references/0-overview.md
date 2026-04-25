@@ -19,24 +19,27 @@
 3. `xllm/core/common/global_flags.cpp`
 4. `xllm/core/common/options.h`
 5. `xllm/core/common/options.cpp`
-6. `xllm/core/common/model_capability.h`
-7. `xllm/core/common/model_capability.cpp`
-8. `xllm/server/xllm_server_registry.h`
-9. `xllm/server/xllm_server_registry.cpp`
-10. `xllm/server/xllm_server.h`
-11. `xllm/server/xllm_server.cpp`
-12. `xllm/core/distributed_runtime/master.h`
-13. `xllm/core/distributed_runtime/master.cpp`
-14. `xllm/core/distributed_runtime/llm_master.h`
-15. `xllm/core/distributed_runtime/llm_master.cpp`
-16. `xllm/core/runtime/options.h`
-17. `xllm/models/model_registry.h`
-18. `xllm/models/model_registry.cpp`
-19. `xllm/api_service/api_service.h`
-20. `xllm/api_service/api_service.cpp`
-21. `xllm/core/distributed_runtime/dist_manager.cpp`
-22. `xllm/core/util/device_name_utils.h`
-23. `xllm/core/util/device_name_utils.cpp`
+6. `xllm/core/util/utils.h`
+7. `xllm/core/util/model_config_utils.h`
+8. `xllm/core/util/model_config_utils.cpp`
+9. `xllm/server/xllm_server_registry.h`
+10. `xllm/server/xllm_server_registry.cpp`
+11. `xllm/server/xllm_server.h`
+12. `xllm/server/xllm_server.cpp`
+13. `xllm/core/distributed_runtime/master.h`
+14. `xllm/core/distributed_runtime/master.cpp`
+15. `xllm/core/distributed_runtime/llm_master.h`
+16. `xllm/core/distributed_runtime/llm_master.cpp`
+17. `xllm/core/runtime/options.h`
+18. `xllm/models/model_registry.h`
+19. `xllm/models/model_registry.cpp`
+20. `xllm/api_service/api_service.h`
+21. `xllm/api_service/api_service.cpp`
+22. `xllm/core/distributed_runtime/dist_manager.cpp`
+23. `xllm/core/util/device_name_utils.h`
+24. `xllm/core/util/device_name_utils.cpp`
+25. `xllm/core/framework/hf_model_loader.cpp`
+26. `xllm/core/framework/model/model_args.h`
 
 ## 本轮回答的关键问题
 
@@ -46,11 +49,11 @@
 - `backend` 允许缺省；若用户不传 `--backend`，`run()` 会调用 `get_model_backend(model_path)` 自动推导：
   - 若模型目录存在 `model_index.json` 且包含 `_diffusers_version`，直接判定为 `dit`。
   - 否则读取 `config.json` 中的 `model_type` 或 `model_name`，再通过 `ModelRegistry::get_model_backend(model_type)` 反查为 `llm/vlm/rec`。
-- `model_type` 本身不进入 `Options`，而是作为“派生能力判定输入”被立即使用：
-  - 计算 `use_mla = ResolveUseMla(model_type, backend)`；
+- `model_type` 本身不进入 `Options`，而是作为“派生能力判定输入”被使用：
   - 自动选择 `tool_call_parser`；
   - 自动选择 `reasoning_parser`；
   - 校验 `enable_prefill_sp` 等 flag 是否与模型能力兼容。
+- MLA 派生当前位于 util/model loading 链路：`Master` 构造阶段调用 `util::should_enable_mla(model_path, backend)` 写入 `Options::enable_mla`，`HFModelLoader::load_model_args()` 也会把 `ModelArgs::enable_mla` 按模型路径重新补齐。
 
 ### 2. 哪些配置停留在 CLI，哪些进入 `Options`，哪些进入 `runtime::Options`
 
@@ -67,7 +70,7 @@
 - `engine` 不是在 `master->run()` 里创建的，而是在 `Master` 构造函数里立刻根据 `Options` 创建。
 - `master->run()` 对 `LLMMaster` 而言只是拉起 scheduler 推进线程，对 `LLMAssistantMaster` 则是拉起一个保活线程；它本身不负责创建 HTTP server。
 - `APIService` 和 `HttpServer` 都是在 `master->run()` 之后才创建。
-- `XllmServer::start(std::unique_ptr<APIService>)` 会直接 `RunUntilAskedToQuit()`，因此 API server 启动路径本身是阻塞的。
+- `XllmServer::start(std::unique_ptr<APIService>)` 会启动 brpc 后安装退出信号处理器，并阻塞在内部 `wait_for_quit_signal()`，因此 API server 启动路径本身是阻塞的。
 
 ## 启动主流程（源码级）
 
@@ -88,17 +91,18 @@ sequenceDiagram
     Main->>Run: run()
     Run->>Run: 校验 model 路径
     Run->>Run: 推导 model_id / backend / host / is_local
-    Run->>Run: 读取 model_type, 推导 use_mla/parser
+    Run->>Run: 读取 model_type, 推导 parser 并校验能力
     Run->>Run: validate_flags()
     Run->>Opt: 组装 xllm::Options
     Run->>Run: 可选初始化 XTensor/PhyPagePool
     Run->>Master: create_master() / LLMAssistantMaster()
+    Master->>Master: should_enable_mla(model_path, backend)
     Master->>Engine: 在 Master 构造函数中创建 Engine
     Run->>Master: master->run()
     Run->>API: 构造 APIService(master)
     Run->>Server: register_server(\"HttpServer\")
     Run->>Server: start(api_service)
-    Server->>Server: RunUntilAskedToQuit()
+    Server->>Server: wait_for_quit_signal()
 ```
 
 ### 分阶段展开
@@ -111,14 +115,13 @@ sequenceDiagram
    - `vlm` 强制关闭 `enable_prefix_cache` 和 `enable_chunked_prefill`；
    - 若 `max_tokens_per_chunk_for_prefill < 0`，回填为 `max_tokens_per_batch`；
    - 自动推导 `tool_call_parser`、`reasoning_parser`；
-   - 自动推导 `use_mla`；
    - `validate_flags()` 处理平台约束与组合约束。
 6. 随后组装 `xllm::Options`，这一步是 CLI flag -> 控制面配置对象的边界。
 7. 若开启 `enable_xtensor`，在创建 `Master` 之前就初始化 `XTensorAllocator` 和 `PhyPagePool`，因此这是启动期的前置一次性逻辑，而不是 `Master` 内部逻辑。
 8. 创建 `Master` 时，`node_rank != 0` 走 `LLMAssistantMaster`，`node_rank == 0` 走 `create_master(backend, options)`。
-9. `Master` 构造函数内部会立刻创建 `Engine`，并把 `Options` 下沉成 `runtime::Options`。
+9. `Master` 构造函数内部会先补齐 `enable_mla`，再立刻创建 `Engine`，并把 `Options` 下沉成 `runtime::Options`。
 10. `master->run()` 拉起主循环线程后，主节点（`node_rank == 0`）或 `enable_xtensor` 场景会继续创建 `APIService` 与 `HttpServer`。
-11. `XllmServer::start()` 绑定路由并阻塞在 brpc 事件循环。
+11. `XllmServer::start()` 绑定路由、启动 brpc，并阻塞等待 SIGINT/SIGTERM。
 
 ## 配置分层表
 
@@ -129,8 +132,8 @@ sequenceDiagram
 | backend | `FLAGS_backend`，为空则从模型文件自动推导 | `backend` | `backend` | `create_master()`、engine 类型、APIService 分支 |
 | task | `FLAGS_task`，默认 `generate` | `task_type` | `task_type` | embedding/generate 路径分流、worker 类型选择 |
 | devices | `FLAGS_devices` 字符串 | `devices` | `devices`（解析成 `vector<torch::Device>`） | 本地/远端 worker 拓扑与设备绑定 |
-| 多机拓扑 | `master_node_addr/nnodes/node_rank/dp_size/ep_size` | 对应字段全量保留 | 对应字段全量保留 | multi-node、PD、worker server 组织 |
-| MLA 能力 | `model_type + backend` 派生 | `use_mla` | `use_mla` | engine/model 执行能力选择 |
+| 多机拓扑 | `master_node_addr/nnodes/node_rank/dp_size/cp_size/ep_size/tp_size/sp_size/cfg_size` | 对应字段全量保留 | 对应字段按后端下沉 | multi-node、PD、worker server 组织 |
+| MLA 能力 | `model_path + backend` 派生 | `enable_mla`（由 `Master` 补齐） | `enable_mla`，同时 `HFModelLoader` 写入 `ModelArgs::enable_mla` | engine/model 执行能力选择 |
 | parser 自动选择 | `model_type` 派生 `tool_call_parser/reasoning_parser` | 保留在 `Options` | 不下沉 | API/请求解析能力 |
 | prefix cache / chunked prefill | 原始 flags，`vlm` 会被启动入口强制改写 | `enable_prefix_cache` / `enable_chunked_prefill` | 同名字段 | scheduler / engine 行为 |
 | `max_tokens_per_chunk_for_prefill` | `<0` 时回填为 `max_tokens_per_batch` | 已归一化写入 | 同名字段 | chunked prefill 调度 |
@@ -148,13 +151,13 @@ sequenceDiagram
 这个文件不是简单的 `main + run`，而是整个系统启动语义的集中编排点。
 
 - 核心局部函数：
-  - `get_model_type(model_path)`：读取 `config.json` 的 `model_type/model_name`。
-  - `get_model_backend(model_path)`：先看 `model_index.json` 判 `dit`，否则通过 `ModelRegistry` 映射 backend。
+  - `util::get_model_type(model_path)`：读取 `config.json` 的 `model_type/model_name`。
+  - `util::get_model_backend(model_path)`：先看 `model_index.json` 判 `dit`，否则通过 `ModelRegistry` 映射 backend。
   - `validate_flags(model_type)`：对平台能力、flag 组合与模型能力做启动前硬校验。
   - `run()`：完成所有派生、归一化、对象创建和 server 启动。
 - 关键流程特征：
   - 同时承担“用户输入归一化”和“系统拓扑定型”两种职责。
-  - 在这里就已经把 `backend`、`is_local`、`use_mla`、parser、`enable_cache_upload`、`enable_kvcache_store` 等关键语义定死。
+  - 在这里就已经把 `backend`、`is_local`、parser、`enable_cache_upload`、`enable_kvcache_store` 等关键语义定死；`enable_mla` 则在 `Master` 构造阶段根据模型路径与 backend 补齐。
   - `run()` 之后，后续模块基本假设这些语义已经稳定。
 
 ### 2. `global_flags.*`: 外部配置输入层
@@ -171,27 +174,28 @@ sequenceDiagram
 - `xllm::Options` 是 `Master` 视角的配置中心。
 - 它不是 `FLAGS_*` 的简单镜像，而是“已经过启动入口整理后的语义配置”：
   - 既有原始参数，如 `backend/task_type/devices`；
-  - 也有派生能力，如 `use_mla`；
+  - 也有派生能力，如 `enable_mla`；
   - 还有组合后的系统特性开关，如 `enable_cache_upload`、`enable_kvcache_store`。
 - `Options::to_string()` 进一步说明它是启动日志与问题排查的核心配置快照。
 
-### 4. `model_capability.*`: 模型能力派生层
+### 4. `core/util/utils.h` + `model_config_utils.*`: 模型能力派生层
 
 - 这一层负责回答“给定 model type，系统应该自动打开哪些能力”。
 - 当前已确认：
-  - `ResolveUseMla(model_type, backend)` 是 MLA 判定中心。
-  - `ResolveSpeculativeDraftModelType(...)` 负责 MTP 草稿模型类型映射。
-  - `ResolveUseMlaFromModelPath(...)` 把“读模型配置”封装成独立能力函数。
+  - `util::get_model_backend(model_path)` 是 backend 自动推导入口。
+  - `util::get_model_type(model_path)` 和 `xllm::get_model_type(model_path)` 都从 `config.json` 读取 `model_type/model_name`。
+  - `util::should_enable_mla(model_path, backend)` 是当前 MLA 判定入口，内部依赖 `mla_model_type_set()`。
 - 额外观察：
-  - `xllm.cpp` 里仍有一份局部 `get_model_type()` 逻辑，与 `model_capability.cpp` 的 `GetModelType()` 存在重复，说明该能力边界还没有完全收拢。
+  - `get_model_type` 仍有 `xllm::util` 和 `xllm` 两个版本，说明“读取模型配置”和“派生模型能力”的边界还没有完全收拢。
 
 ### 5. `ServerRegistry` + `XllmServer`: 服务壳层
 
 - `ServerRegistry` 是一个非常薄的 singleton registry，职责只是按名字持有 `XllmServer` 实例。
 - `XllmServer` 才是 brpc 封装主体：
   - `start(std::unique_ptr<APIService>)` 负责绑定 HTTP/RPC 路由；
+  - `node_rank == 0` 绑定完整 API 路由，`node_rank != 0 && enable_xtensor` 只绑定 `fork_master` 控制路由；
   - 其他 `start(...)` 重载服务于 `DisaggPDService`、`WorkerService`、`CollectiveService`、`XTensorDistService`。
-- 对 API 路径来说，`start(api_service)` 会直接阻塞在 `RunUntilAskedToQuit()`，说明“服务主循环”就是 brpc server 本身。
+- 对 API 路径来说，`start(api_service)` 会启动 brpc 后阻塞等待 SIGINT/SIGTERM，说明“服务主循环”由 brpc server 加一层显式退出等待共同构成。
 
 ### 6. `Master` / `create_master()` / `runtime::Options`: 控制面到执行面的边界
 
