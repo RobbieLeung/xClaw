@@ -1,267 +1,132 @@
-# xclaw 使用文档
+# 使用 dev-team
 
-## 1. 你只需要做什么
+## 运行要求
 
-`xclaw` 的用户动作很少：
+使用支持原生子 agent 和 `.codex/agents/*.toml` 角色配置的 Codex，主会话建议选择 `gpt-6.1-sol`。模型 provider 需要能够提供三个角色配置中指定的模型。委派前确认 `dev-team` 和 architect、developer、checker 均已识别。
 
-- 提交任务
-- 看进度
-- 中途提建议
-- 按需确认计划
-- 最终确认交付
-- 必要时终止任务
-- 必要时恢复最近一次任务
+## 安装到目标仓库或个人目录
 
-对应命令只有：
-
-- `xclaw start`
-- `xclaw status`
-- `xclaw stop`
-- `xclaw resume`
-
-## 2. 前置条件
-
-- Python `>= 3.10`
-- 本地可执行 `codex` CLI
-- `codex exec` 已完成认证
-
-安装：
+从 dev-team 根目录运行下面的命令。`dev_team_target` 是已经存在的目标仓库；改成 `"$HOME"` 可安装为用户级 skill 与角色。脚本先检查全部目标，遇到同名 skill、角色文件或软链接就退出，不覆盖。目标已有 `.codex/config.toml` 时保留它，再手动合并后面的配置。
 
 ```bash
-python -m pip install -e .
+dev_team_target=/absolute/path/to/target-repo
+python3 - "$PWD" "$dev_team_target" <<'PY'
+from pathlib import Path
+import shutil
+import sys
+
+source, target = (Path(value).expanduser().resolve() for value in sys.argv[1:])
+if not target.is_dir():
+    raise SystemExit("Target directory must already exist")
+paths = [Path(".agents/skills/dev-team")]
+paths += [Path(".codex/agents") / (name + ".toml")
+          for name in ("architect", "developer", "checker")]
+for path in paths:
+    if not (source / path).exists():
+        raise SystemExit("Missing source: " + str(path))
+    destination = target / path
+    if destination.exists() or destination.is_symlink():
+        raise SystemExit("Refusing to replace: " + str(destination))
+for path in paths:
+    destination = target / path
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if (source / path).is_dir():
+        shutil.copytree(source / path, destination)
+    else:
+        shutil.copy2(source / path, destination)
+config = target / ".codex/config.toml"
+if not config.exists() and not config.is_symlink():
+    shutil.copy2(source / ".codex/config.toml", config)
+else:
+    print("Existing config preserved; merge [agents] manually")
+print("Installed dev-team and three agent configurations")
+PY
 ```
 
-开发依赖：
+安装前也应检查个人目录中是否已经存在同名角色，避免项目角色遮蔽原有个人角色。更新已有安装时先查看差异，不直接重复覆盖。配置只放在 dev-team 仓库不会让其他仓库自动获得三个角色；仅复制 skill 也不会注册角色。
 
-```bash
-python -m pip install -e ".[dev]"
+已有配置中合并下列字段，不要重复创建 `[agents]` 表，不覆盖其他设置；已有更低的并发限制可以保留：
+
+```toml
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 2
 ```
 
-## 3. 提交任务
+此上限是同时打开的子 agent 线程数，不含主会话，也不是费用或重试上限。按宿主要求信任项目配置并重新启动会话；确认 `dev-team` 和三个自定义角色均被识别。不要把 skill 的 `agents/openai.yaml` UI 元数据误当作子 agent 配置。
 
-```bash
-xclaw start \
-  --repo /abs/path/to/target_repo \
-  --task "实现 xxx，并补充必要测试"
-```
+## 开始工作
 
-或者直接从已有计划启动：
-
-```bash
-xclaw start \
-  --repo /abs/path/to/target_repo \
-  --plan ./plan.md
-```
-
-也可以同时显式指定任务描述：
-
-```bash
-xclaw start \
-  --repo /abs/path/to/target_repo \
-  --plan ./plan.md \
-  --task "实现 xxx，并补充必要测试"
-```
-
-可选参数：
-
-- `--plan`
-- `--task-id`
-- `--workspace-root`
-
-说明：
-
-- `--task` 和 `--plan` 至少提供一个
-- `--task` 与 `--plan` 同时提供时，`--task` 作为显式任务描述
-- 仅提供 `--plan` 时，系统会优先取第一个一级标题作为任务描述；没有一级标题时退化为首个非空文本
-- 外部 `--plan` 只作为启动参考输入，不会直接成为正式 `current/plan.md`
-- 使用 `--plan` 启动时，任务会直接从 `product_owner_dispatch` 开始，由 `Product Owner` 先整理出第一版正式 `plan.md`
-- 在第一版正式 `plan.md` 产出前，请不要删除原始 `--plan` 文件；否则首次派发会失败
-
-启动成功后会输出：
-
-- `task_id`
-- `task_workspace_path`
-- `worker_pid`
-- `progress_path`
-
-## 4. 看进度
-
-```bash
-xclaw status
-```
-
-默认输出包含：
-
-- `active_task_id`
-- `task_status`
-- `user_summary`
-- `latest_update`
-- `next_step`
-- `needs_human_review`
-- `review_kind`（仅在等待人工确认时显示）
-- `plan_confirmation_summary`（仅在等待 `plan` 审阅时显示）
-- `risks`（仅在存在明确风险时显示）
-- `pending_advice_count`（仅在大于 0 时显示）
-- `latest_review_request_id`（仅在等待人工确认时显示）
-
-说明：
-
-- `review_kind: plan` 表示当前在确认某个 `plan_revision` 的待确认事项
-- `review_kind: delivery` 表示当前在做最终交付验收
-- 更详细的内部信息默认不展示；需要时直接查看 `gateway.log`、`runs/` 和 `current/*.md`
-
-## 5. 中途提建议
-
-```bash
-xclaw status --advise "请不要扩大范围，先把核心链路打通。"
-```
-
-特点：
-
-- 建议进入 `human_advice_log.md`
-- 不会立即打断当前阶段
-- `Product Owner` 会在下一个正式路由边界统一吸收 pending advice
-
-限制：
-
-- 当任务处于 `waiting_approval` 时，不接受 `--advise`
-- 这时请直接使用 `--approve` 或 `--reject`
-
-## 6. 计划确认与交付验收
-
-当 `xclaw status` 输出：
+在实际目标仓库启动 Codex 后输入：
 
 ```text
-needs_human_review: yes
+$dev-team 给 vLLM 增加一个调度策略，先设计方案，再实现和验证。
 ```
 
-说明当前正在等待你做正式确认。
+角色文件的 `model` 与 `model_reasoning_effort` 固定其设置。子 agent 继承父会话的 provider、工具和权限；项目配置不会提供新的模型权限，也不会给 architect/checker 创建独立只读沙箱。
 
-### 6.1 通过
+主会话根据任务需要调用已安装的角色，接收设计或检查结果，再派发后续任务。子 agent 只完成被分配的工作，需要其他角色时返回主会话。小任务可由主会话直接完成；角色、原生工具或指定模型缺失时，明确报告缺项，并继续不依赖该能力的工作。
+
+## 执行检查
+
+Python 3.9+，macOS/Linux，无第三方依赖。每次运行都有独立工件目录：
 
 ```bash
-xclaw status --approve --comment "可以接受，进入下一步。"
+python3 /installed/path/dev-team/scripts/run-checks.py \
+  --cwd /absolute/path/to/target-repo --timeout 300 \
+  --output-dir /absolute/path/to/check-artifacts -- \
+  python3 -m unittest discover -s tests -v
 ```
 
-### 6.2 驳回
+使用目标项目自己的命令，例如 `pytest`、`ctest` 或 benchmark 命令；测试入口不自动猜测测试套件。参数按原样传给子进程，shell 管道、变量展开和通配符不会自动执行。不要把凭据写进命令或输出；脚本不保存命令参数和环境变量，但会原样保存子进程的 stdout/stderr。
 
-```bash
-xclaw status --reject --comment "当前计划改动了产品范围，先收紧。"
+| 情形 | 结果状态 | 脚本退出码 |
+| --- | --- | --- |
+| 命令正常返回 0 | `passed` | 0 |
+| 检查失败 | `failed` | 命令退出码；信号退出映射为 128 + 信号编号 |
+| 超时 | `timed_out` | 124 |
+| Ctrl-C | `interrupted` | 130 |
+| 找不到可执行文件 | `launch_failed` | 127 |
+| 其他启动/工件写入错误 | `launch_failed` 或明确错误 | 126 |
+| 缺命令、非法超时/目录 | 参数错误，未执行 | 2 |
+
+`result.json` 包含状态、退出码、耗时、工作目录和日志路径。人工判断测试是否实际覆盖需求；“运行了一个返回 0 的空命令”不构成验收。
+
+## 原生委派验证
+
+使用临时项目和合成代码验证真实协作，保留子线程事件、最终 diff 与测试输出。一次完整验证应观察到主会话分派角色、子 agent 执行工具、主会话核对证据并交付，而不是只有模型文本声称已经委派。
+
+按以下场景检查实际行为：
+
+| 场景 | 应观察到的行为 |
+| --- | --- |
+| 小型明确改动 | 主会话直接完成并验证 |
+| 有设计取舍的实现 | architect 返回方案，主会话派发 developer，再由 checker 检查稳定代码 |
+| 检查失败 | checker 提供证据，主会话派发修复；设计原因交 architect 诊断 |
+| 缺少角色或模型 | 主会话明确报告缺项，未执行的委派保持未验证状态 |
+
+本地单元测试覆盖安装和检查脚本，不能证明真实模型委派成功。完整原生委派、跨线程工具执行和失败修复闭环尚未验证；此前免费测试端点拒绝了当前 Codex 请求中的 `input_text` 内容格式。
+
+## 自定义测试模型
+
+测试免费或自建模型时，先确认模型列表、Responses API 流式和工具调用均可用于当前 Codex 客户端。[官方 provider 文档](https://learn.chatgpt.com/docs/config-file/config-advanced)
+
+不要修改真实的用户配置或正式角色模型。创建临时 `CODEX_HOME` 和一个只有合成代码的测试仓库，把 skill 与三份角色配置复制进去；只在临时副本把三个角色的模型改成端点实际公布的模型 ID，并选择该模型支持的推理强度。在临时用户配置中设置：
+
+```toml
+model = "MODEL_ID_FROM_ENDPOINT"
+model_provider = "smoke"
+
+[model_providers.smoke]
+name = "Isolated smoke endpoint"
+base_url = "https://your-endpoint/v1"
+wire_api = "responses"
+request_max_retries = 0
+stream_max_retries = 0
+
+# 若端点需要认证，使用 env_key 引用环境变量；不要把值写入文件。
 ```
 
-说明：
+在临时项目中启动一次 Codex 会话，由该会话原生派发三个测试角色。限制单次验证的总时间，按前一节核对真实委派、模型路由、最终 diff 与测试输出。
 
-- `--reject` 必须带 `--comment`
-- `reject` 不会直接终止任务
-- 任务会回到 `Product Owner`
-- 如果当前是 `plan` 审阅，系统会重整 `plan.md`
-- 如果当前是 `delivery` 审阅，系统会整改后再次发起交付验收
-
-## 7. 恢复最近任务
-
-```bash
-xclaw resume
-```
-
-作用：
-
-- 仅在当前没有活跃 task 时可用
-- 选择 `workspace/` 下最新的一个 task workspace（默认生成的 `task_id` 自带时间序）
-- 先调用 `Recovery Agent` 检查并最小修复 workspace
-- 由 `Recovery Agent` 决定从当前 stage 继续，还是回到合适的流程边界
-- 重新拉起 `gateway-worker`，让 pipeline 从恢复后的 stage 继续
-
-典型场景：
-
-- 上一轮卡在 `failed` 或被手工 `terminated`
-- worker 掉线后留下 `running` 状态但没有 `gateway_pid`
-- 需要保留 `current/` 和 `runs/` 现场继续推进
-
-## 8. 停止任务
-
-```bash
-xclaw stop
-```
-
-作用：
-
-- 将任务状态改为 `terminated`
-- 清空 `gateway_pid`
-- 记录停止事件和 recovery note
-- 向后台 worker 发送终止信号
-
-## 9. 工作区结构
-
-典型任务目录如下：
-
-```text
-workspace/<task_id>/
-  task.md
-  event_log.md
-  gateway.log
-  current/
-  history/
-  runs/
-```
-
-常见 `current/*.md` 包括：
-
-- `plan.md`
-- `dev_handoff.md`
-- `test_handoff.md`
-- `implementation_result.md`
-- `test_report.md`
-- `repair_ticket.md`
-- `route_decision.md`
-- `review_request.md`
-- `review_decision.md`
-- `progress.md`
-- `human_advice_log.md`
-- `closeout.md`
-
-其中：
-
-- `plan.md` 是唯一正式计划工件
-- `task.md` 的 `bootstrap_plan_source_path` 会记录启动时传入的外部 `--plan` 路径（若存在）
-- `review_request.md` / `review_decision.md` 会记录 `review_kind`
-- `plan` 审阅还会记录对应的 `plan_revision`
-
-## 10. 排障
-
-优先查看：
-
-```text
-<task_workspace>/gateway.log
-<task_workspace>/runs/<seq>_<role>/prompt.md
-<task_workspace>/runs/<seq>_<role>/response.md
-<task_workspace>/runs/<seq>_<role>/run.log
-```
-
-如果是用户监督相关问题，再看：
-
-```text
-<task_workspace>/current/progress.md
-<task_workspace>/current/human_advice_log.md
-<task_workspace>/current/review_request.md
-<task_workspace>/current/review_decision.md
-```
-
-## 11. 常见问题
-
-### 10.1 我提的建议什么时候会生效？
-
-建议不会立即打断当前角色执行。
-
-系统会在下一个 `Product Owner` 正式路由边界统一吸收 pending advice。
-
-### 10.2 为什么有时改了 `plan` 不会再次要求我确认？
-
-因为 `plan` 的内部性修改默认不需要人类重审。
-
-只有当当前计划涉及产品目标、范围、验收标准、关键用户行为、显著成本/风险取舍或外部依赖决策变化时，才会再次触发 `plan` 审阅。
-
-### 10.3 `reject` 之后任务会结束吗？
-
-不会。
-
-`reject` 的含义是“当前待审内容不接受，需要重新整改”。
+使用测试模型验证的结果只适用于该端点和模型。正式 Astra/Sol/Luna 的访问权限与协作表现需要使用正式角色配置另行验证。

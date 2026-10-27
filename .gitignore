@@ -2,11 +2,10 @@
 __pycache__/
 *.py[cod]
 *$py.class
-src/xclaw.egg-info/
 build/
 
 # Test/tool cache
 .pytest_cache/
 
 # Local workspace artifacts
-workspace/
+.dev-team/
