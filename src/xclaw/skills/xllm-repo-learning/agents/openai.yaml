@@ -1,4 +1,0 @@
-interface:
-  display_name: "xLLM Repo Learning"
-  short_description: "Source-verified xLLM architecture navigation"
-  default_prompt: "Use $xllm-repo-learning to inspect the xLLM repo, verify claims against current source, and explain the relevant architecture path."

@@ -1,0 +1,5 @@
+# Project-scoped collaboration defaults. Model/provider/permissions remain the
+# user's choice. Merge this table when installing into an existing project.
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 2
